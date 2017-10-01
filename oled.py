@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 from os import environ
+from PIL import Image
 from pyftdi import FtdiLogger
 from pyftdi.spi import SpiController
-from sys import stdout
+from qrcode import QRCode
+from sys import argv, stdout
 from time import sleep
 
 
@@ -15,7 +17,8 @@ class Ssd1306Port(object):
     RESET_PIN = 1 << 5
     IO_PINS = DC_PIN | RESET_PIN
 
-    def __init__(self):
+    def __init__(self, debug=False):
+        self._debug = debug
         self._spi = SpiController(cs_count=1)
         self._spi_port = None
         self._io_port = None
@@ -24,8 +27,8 @@ class Ssd1306Port(object):
     def open(self):
         """Open an SPI connection to a slave"""
         url = environ.get('FTDI_DEVICE', 'ftdi:///1')
-        self._spi.configure(url, debug=True)
-        self._spi_port = self._spi.get_port(0, freq=1E6, mode=0)
+        self._spi.configure(url, debug=self._debug)
+        self._spi_port = self._spi.get_port(0, freq=4E6, mode=0)
         self._io_port = self._spi.get_gpio()
         self._io_port.set_direction(self.IO_PINS, self.IO_PINS)
 
@@ -52,7 +55,7 @@ class Ssd1306Port(object):
     def write_data(self, data):
         self._io |= self.DC_PIN
         self._io_port.write(self._io)
-        self._io.write(data)
+        self._spi_port.write(data)
 
 
 class Ssd1306(object):
@@ -78,11 +81,12 @@ class Ssd1306(object):
     DISPLAY_ON_CMD = 0xAF
 
     # Addressing
+    ADDRESS_SET_LOW_COL_CMD = 0x00
     ADDRESS_SET_HIGH_COL_CMD = 0x10
     ADDRESS_SET_MODE_CMD = 0x20
     ADDRESS_SET_COL_CMD = 0x21
     ADDRESS_SET_PAGE_CMD = 0x22
-    ADDRESS_SET_PAGES_CMD = 0XB0
+    ADDRESS_SET_PAGES_CMD = 0xB0
 
     # Hardware configuration
     START_LINE_BASE_CMD = 0x40
@@ -108,6 +112,9 @@ class Ssd1306(object):
     FADE_OUT_BLINK_CMD = 0X23
     ZOOM_IN_CMD = 0xD6
 
+    WIDTH = 128
+    HEIGHT = 64
+
     def __init__(self, interface):
         self._if = interface
 
@@ -119,24 +126,73 @@ class Ssd1306(object):
             self.DISPLAY_OFFSET_CMD, 0x00,
             self.CHARGE_PUMP_CMD, self.CHARGE_PUMP_ENABLE,
             self.START_LINE_BASE_CMD,
-            self.DISPLAY_INV_CMD,  # self.DISPLAY_REG_CMD,
+            self.DISPLAY_REG_CMD,
             self.DISPLAY_RESTORE_CMD,
             self.SEGMENT_REMAP_HIGH_CMD,
             self.SCAN_DIR_REVERSE_CMD,
             self.COMM_PINS_CFG_CMD, self.COMM_PINS_CFG_DEFAULT,
-            self.DISPLAY_CONTRAST_CMD, 0xf0,
+            self.DISPLAY_CONTRAST_CMD, 0x70,
             self.PRECHARGE_PEDIOD_CMD, 0xf1,
             self.VCOMM_DESELECT_LEVEL_CMD, 0x40,
             self.DISPLAY_ON_CMD))
         self._if.reset()
         self._if.write_command(init_sequence)
 
+    def invert(self, mode=True):
+        self._if.write_command(bytes([mode and self.DISPLAY_INV_CMD or
+                                      self.DISPLAY_REG_CMD]))
+
+    def set_page_address(self, address):
+        command = self.ADDRESS_SET_PAGES_CMD + address
+        self._if.write_command([command])
+
+    def set_column_address(self, address):
+        command = [self.ADDRESS_SET_HIGH_COL_CMD | (address >> 4),
+                   self.ADDRESS_SET_LOW_COL_CMD | (address & ((1 << 4) - 1))]
+        self._if.write_command(bytes(command))
+
+    def set_cursor(self, line, column):
+        command = [self.ADDRESS_SET_PAGES_CMD | line,
+                   self.ADDRESS_SET_HIGH_COL_CMD | (column >> 4),
+                   self.ADDRESS_SET_LOW_COL_CMD | (column & ((1 << 4) - 1))]
+        self._if.write_command(bytes(command))
+
+    def show(self, buf):
+        offset = 0
+        for i in range(len(buf)//self.WIDTH):
+            self.set_cursor(i, 0)
+            self._if.write_data(buf[offset:offset+self.WIDTH])
+            offset += self.WIDTH
+
+    def qrcode(self, msg):
+        qr = QRCode(box_size=2, border=2)
+        qr.add_data(msg)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        oled_img = Image.new(img.mode, (self.WIDTH, self.HEIGHT))
+        w, h = img.size
+        x, y = (self.WIDTH-w)//2, (self.HEIGHT-h)//2
+        oled_img.paste(img, (x, y, x+w, y+h))
+        buf = oled_img.getdata(0)
+        screen = bytearray((self.WIDTH*self.HEIGHT)//8)
+        for pos, pixel in enumerate(buf):
+            row = pos // (self.WIDTH*8)
+            col = pos % self.WIDTH
+            line = ((pos // self.WIDTH) % 8)
+            if pixel:
+                screen[row*self.WIDTH+col] |= 1 << line
+        self.show(screen)
+
 
 def main():
-    port = Ssd1306Port()
+    port = Ssd1306Port(False)
     port.open()
     disp = Ssd1306(port)
     disp.initialize()
+    disp.invert(True)
+    if len(argv) > 1:
+        disp.qrcode(argv[1])
+    sleep(0.1)
     port.close()
 
 
