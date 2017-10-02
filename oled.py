@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 
 from os import environ
-from PIL import Image
 from pyftdi import FtdiLogger
 from pyftdi.spi import SpiController
-from qrcode import QRCode
 from sys import argv, stdout
-from time import sleep
+from time import sleep, time as now
 
 
 class Ssd1306Port(object):
@@ -157,21 +155,26 @@ class Ssd1306(object):
                    self.ADDRESS_SET_LOW_COL_CMD | (column & ((1 << 4) - 1))]
         self._if.write_command(bytes(command))
 
-    def show(self, buf):
+    def show(self, buf, x=0, y=0):
         offset = 0
         for i in range(len(buf)//self.WIDTH):
-            self.set_cursor(i, 0)
+            self.set_cursor(i, x)
             self._if.write_data(buf[offset:offset+self.WIDTH])
             offset += self.WIDTH
 
     def qrcode(self, msg):
+        try:
+            from PIL import Image
+            from qrcode import QRCode
+        except ImportError as ex:
+            self.log.critical('PIL and QRCode modules are required')
         qr = QRCode(box_size=2, border=2)
         qr.add_data(msg)
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white")
         oled_img = Image.new(img.mode, (self.WIDTH, self.HEIGHT))
         w, h = img.size
-        x, y = (self.WIDTH-w)//2, (self.HEIGHT-h)//2
+        x, y = 0, (self.HEIGHT-h)//2
         oled_img.paste(img, (x, y, x+w, y+h))
         buf = oled_img.getdata(0)
         screen = bytearray((self.WIDTH*self.HEIGHT)//8)
@@ -181,7 +184,23 @@ class Ssd1306(object):
             line = ((pos // self.WIDTH) % 8)
             if pixel:
                 screen[row*self.WIDTH+col] |= 1 << line
+        start = now()
         self.show(screen)
+        print('Time: %.3fs' % (now()-start))
+
+    def text(self, msg, line=0, column=0):
+        from adafruit.bitmapfont import BitmapFont
+        width = self.WIDTH # //2
+        height = self.HEIGHT
+        bitmap = bytearray(width*height//8)
+        with BitmapFont(width, height, self._pixel) as bf:
+            bf.text(msg, line, column, bitmap, wstride=width, hstride=height)
+        start = now()
+        self.show(bitmap)
+        print('Time: %.3fs' % (now()-start))
+
+    def _pixel(self, x, y, bitmap, wstride, hstride):
+        bitmap[x+(y >> 3)*wstride] |= 1 << (y & 7)
 
 
 def main():
@@ -192,6 +211,9 @@ def main():
     disp.invert(True)
     if len(argv) > 1:
         disp.qrcode(argv[1])
+    disp.text("first", 0)
+    disp.text("next", 8)
+    # prevent SPI glitches as screen does not support a /CS line
     sleep(0.1)
     port.close()
 
