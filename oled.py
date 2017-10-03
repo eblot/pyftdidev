@@ -115,6 +115,7 @@ class Ssd1306(object):
 
     def __init__(self, interface):
         self._if = interface
+        self._gddram = bytearray(self.WIDTH*self.HEIGHT//8)
 
     def initialize(self):
         init_sequence = bytes((
@@ -155,12 +156,26 @@ class Ssd1306(object):
                    self.ADDRESS_SET_LOW_COL_CMD | (column & ((1 << 4) - 1))]
         self._if.write_command(bytes(command))
 
-    def show(self, buf, x=0, y=0):
-        offset = 0
-        for i in range(len(buf)//self.WIDTH):
-            self.set_cursor(i, x)
-            self._if.write_data(buf[offset:offset+self.WIDTH])
-            offset += self.WIDTH
+    def show(self, first=0, last=0):
+        print('-'*20)
+        if not last:
+            last = len(self._gddram)-1
+        col = first % self.WIDTH
+        line = first // self.WIDTH
+        start = col
+        end = last % self.WIDTH
+        count = 0
+        print("first %d start %d" % (first, start))
+        print("last %d  end   %d" % (last, end))
+        while end <= last:
+            self.set_cursor(line//8, col)
+            self._if.write_data(self._gddram[start:end])
+            count += (end-start)
+            print("  last %d  end   %d" % (start, end))
+            start += self.WIDTH
+            end += self.WIDTH
+            line += 8
+        print('%d bytes' % count)
 
     def qrcode(self, msg):
         try:
@@ -177,30 +192,23 @@ class Ssd1306(object):
         x, y = 0, (self.HEIGHT-h)//2
         oled_img.paste(img, (x, y, x+w, y+h))
         buf = oled_img.getdata(0)
-        screen = bytearray((self.WIDTH*self.HEIGHT)//8)
         for pos, pixel in enumerate(buf):
             row = pos // (self.WIDTH*8)
             col = pos % self.WIDTH
             line = ((pos // self.WIDTH) % 8)
             if pixel:
-                screen[row*self.WIDTH+col] |= 1 << line
+                self._gddram[row*self.WIDTH+col] |= 1 << line
         start = now()
-        self.show(screen)
+        self.show()
         print('Time: %.3fs' % (now()-start))
 
-    def text(self, msg, line=0, column=0):
+    def text(self, msg, x=0, y=0):
         from adafruit.bitmapfont import BitmapFont
-        width = self.WIDTH # //2
-        height = self.HEIGHT
-        bitmap = bytearray(width*height//8)
-        with BitmapFont(width, height, self._pixel) as bf:
-            bf.text(msg, line, column, bitmap, wstride=width, hstride=height)
+        with BitmapFont(self._gddram, self.WIDTH, self.HEIGHT) as bf:
+            fpos, lpos = bf.text(msg, x, y)
         start = now()
-        self.show(bitmap)
+        self.show(fpos, lpos)
         print('Time: %.3fs' % (now()-start))
-
-    def _pixel(self, x, y, bitmap, wstride, hstride):
-        bitmap[x+(y >> 3)*wstride] |= 1 << (y & 7)
 
 
 def main():
@@ -211,8 +219,9 @@ def main():
     disp.invert(True)
     if len(argv) > 1:
         disp.qrcode(argv[1])
-    disp.text("first", 0)
-    disp.text("next", 8)
+    disp.invert(True)
+    disp.text("first", 80, 16)
+    disp.text("next", 64, 21)
     # prevent SPI glitches as screen does not support a /CS line
     sleep(0.1)
     port.close()
