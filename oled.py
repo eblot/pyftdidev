@@ -71,14 +71,20 @@ class GfxBuffer(object):
     def __len__(self):
         return len(self.buffer)
 
-    def copy_bitmap(self, img):
+    def copy_bitmap(self, img, x=0, y=0):
+        width, height = img.size
         buf = img.getdata(0)
         for pos, pixel in enumerate(buf):
-            row = pos // (self.width*8)
-            col = pos % self.width
-            line = ((pos // self.width) % 8)
+            row = pos % width
+            col = pos // width
+            xoff = row + x
+            if xoff >= self.width:
+                continue
+            yoff = col + y
+            if yoff >= self.height:
+                break
             if pixel:
-                self.buffer[row*self.width+col] |= 1 << line
+                self.buffer[xoff + (yoff >> 3)*self.width] |= 1 << (yoff & 7)
 
     def invalidate(self, tl=None, br=None):
         if not tl:
@@ -219,7 +225,6 @@ class Ssd1306(object):
 
     def qrcode(self, msg):
         try:
-            from PIL import Image
             from qrcode import QRCode
         except ImportError as ex:
             self.log.critical('PIL and QRCode modules are required')
@@ -227,19 +232,13 @@ class Ssd1306(object):
         qr.add_data(msg)
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white")
-        oled_img = Image.new(img.mode, (self.WIDTH, self.HEIGHT))
-        w, h = img.size
-        x, y = 0, (self.HEIGHT-h)//2
-        oled_img.paste(img, (x, y, x+w, y+h))
-        self.gfxbuf.copy_bitmap(oled_img)
+        self.gfxbuf.copy_bitmap(img)
         self.gfxbuf.paint()
 
     def text(self, msg, x=0, y=0, **kwargs):
         from adafruit.bitmapfont import BitmapFont
         with BitmapFont(self.gfxbuf) as bf:
             bf.text(msg, x, y, **kwargs)
-        self.gfxbuf.paint()
-        self.gfxbuf.paint()
         self.gfxbuf.paint()
 
 
@@ -253,7 +252,7 @@ def main():
         disp.qrcode(argv[1])
     disp.invert(True)
     disp.text("first", 10, 16, bold=True)
-    disp.text("next", 5, 21, bold=True)
+    disp.text("next", 5, 21)
     # prevent SPI glitches as screen does not support a /CS line
     sleep(0.1)
     port.close()
