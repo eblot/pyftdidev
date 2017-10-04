@@ -26,7 +26,7 @@ class Ssd1306Port(object):
         """Open an SPI connection to a slave"""
         url = environ.get('FTDI_DEVICE', 'ftdi:///1')
         self._spi.configure(url, debug=self._debug)
-        self._spi_port = self._spi.get_port(0, freq=4E6, mode=0)
+        self._spi_port = self._spi.get_port(0, freq=3E6, mode=0)
         self._io_port = self._spi.get_gpio()
         self._io_port.set_direction(self.IO_PINS, self.IO_PINS)
 
@@ -37,13 +37,13 @@ class Ssd1306Port(object):
     def reset(self):
         self._io = self.RESET_PIN
         self._io_port.write(self._io)
-        sleep(0.005)
+        sleep(0.001)
         self._io = 0
         self._io_port.write(self._io)
-        sleep(0.005)
+        sleep(0.001)
         self._io = self.RESET_PIN
         self._io_port.write(self._io)
-        sleep(0.005)
+        sleep(0.001)
 
     def write_command(self, data):
         self._io &= ~self.DC_PIN
@@ -54,6 +54,62 @@ class Ssd1306Port(object):
         self._io |= self.DC_PIN
         self._io_port.write(self._io)
         self._spi_port.write(data)
+
+
+class GfxBuffer(object):
+    """
+    """
+
+    def __init__(self, display, width, height):
+        self.display = display
+        self.width = width
+        self.height = height
+        self.buffer = bytearray(width*height//8)
+        self._tl = [0, 0]
+        self._br = [self.width, self.height]
+
+    def __len__(self):
+        return len(self.buffer)
+
+    def copy_bitmap(self, img):
+        buf = img.getdata(0)
+        for pos, pixel in enumerate(buf):
+            row = pos // (self.width*8)
+            col = pos % self.width
+            line = ((pos // self.width) % 8)
+            if pixel:
+                self.buffer[row*self.width+col] |= 1 << line
+
+    def invalidate(self, tl=None, br=None):
+        if not tl:
+            self._tl = [0, 0]
+        else:
+            if tl[0] < self._tl[0]:
+                self._tl[0] = tl[0]
+            if tl[1] < self._tl[1]:
+                self._tl[1] = tl[1]
+        if not br:
+            self._br = [self.width, self.height]
+        else:
+            if br[0] > self._br[0]:
+                self._br[0] = br[0]
+            if br[1] > self._br[1]:
+                self._br[1] = br[1]
+
+    def paint(self):
+        x, y = self._tl[0], self._tl[1] & ~0x7
+        last_y = (self._br[1]+7) & ~0x7
+        width = self._br[0]-self._tl[0]
+        count = 0
+        while y < last_y:
+            self.display.set_cursor(y//8, x)
+            start = x + y*self.width//8
+            end = start + width
+            self.display.write_buffer(self.buffer[start:end])
+            count += (end-start)
+            y += 8
+        self._tl = [self.width, self.height]
+        self._br = [0, 0]
 
 
 class Ssd1306(object):
@@ -115,7 +171,8 @@ class Ssd1306(object):
 
     def __init__(self, interface):
         self._if = interface
-        self._gddram = bytearray(self.WIDTH*self.HEIGHT//8)
+        # self._gddram = bytearray(self.WIDTH*self.HEIGHT//8)
+        self.gfxbuf = GfxBuffer(self, self.WIDTH, self.HEIGHT)
 
     def initialize(self):
         init_sequence = bytes((
@@ -151,32 +208,14 @@ class Ssd1306(object):
         self._if.write_command(bytes(command))
 
     def set_cursor(self, line, column):
+        # print("cursor L:%d C:%d" % (line, column))
         command = [self.ADDRESS_SET_PAGES_CMD | line,
                    self.ADDRESS_SET_HIGH_COL_CMD | (column >> 4),
                    self.ADDRESS_SET_LOW_COL_CMD | (column & ((1 << 4) - 1))]
         self._if.write_command(bytes(command))
 
-    def paint(self, tl=None, br=None):
-        # print('-'*20)
-        if not tl:
-            tl = (0, 0)
-        if not br:
-            br = (self.WIDTH, self.HEIGHT)
-        x, y = tl[0], tl[1] & ~0x7
-        last_y = (br[1]+7) & ~0x7
-        width = br[0]-tl[0]
-        count = 0
-        # print('paint %d,%d x %d,%d: %d cols, %d lines' %
-        #       (x, y, x+width, last_y, width, (last_y-y)//8))
-        while y < last_y:
-            self.set_cursor(y//8, x)
-            start = x*self.WIDTH//8
-            end = start + width
-            self._if.write_data(self._gddram[start:end])
-            count += (end-start)
-            # print("  last %d  end   %d" % (start, end))
-            y += 8
-        # print('%d bytes' % count)
+    def write_buffer(self, buf):
+        self._if.write_data(buf)
 
     def qrcode(self, msg):
         try:
@@ -192,24 +231,16 @@ class Ssd1306(object):
         w, h = img.size
         x, y = 0, (self.HEIGHT-h)//2
         oled_img.paste(img, (x, y, x+w, y+h))
-        buf = oled_img.getdata(0)
-        for pos, pixel in enumerate(buf):
-            row = pos // (self.WIDTH*8)
-            col = pos % self.WIDTH
-            line = ((pos // self.WIDTH) % 8)
-            if pixel:
-                self._gddram[row*self.WIDTH+col] |= 1 << line
-        start = now()
-        self.paint()
-        print('Time: %.3fs' % (now()-start))
+        self.gfxbuf.copy_bitmap(oled_img)
+        self.gfxbuf.paint()
 
-    def text(self, msg, x=0, y=0):
+    def text(self, msg, x=0, y=0, **kwargs):
         from adafruit.bitmapfont import BitmapFont
-        with BitmapFont(self._gddram, self.WIDTH, self.HEIGHT) as bf:
-            tl, br = bf.text(msg, x, y)
-        start = now()
-        self.paint(tl, br)
-        print('Time: %.3fs' % (now()-start))
+        with BitmapFont(self.gfxbuf) as bf:
+            bf.text(msg, x, y, **kwargs)
+        self.gfxbuf.paint()
+        self.gfxbuf.paint()
+        self.gfxbuf.paint()
 
 
 def main():
@@ -221,8 +252,8 @@ def main():
     if len(argv) > 1:
         disp.qrcode(argv[1])
     disp.invert(True)
-    disp.text("first", 80, 16)
-    disp.text("next", 64, 21)
+    disp.text("first", 10, 16, bold=True)
+    disp.text("next", 5, 21, bold=True)
     # prevent SPI glitches as screen does not support a /CS line
     sleep(0.1)
     port.close()

@@ -1,7 +1,6 @@
-# MicroPython basic bitmap font renderer.
-# Author: Tony DiCola
+# Based on MicroPython basic bitmap font renderer.
+# Original author: Tony DiCola
 # License: MIT License (https://opensource.org/licenses/MIT)
-# Modified for regular PY3
 
 from struct import unpack as sunpack
 from os.path import dirname, join as joinpath
@@ -9,7 +8,7 @@ from os.path import dirname, join as joinpath
 
 class BitmapFont(object):
 
-    def __init__(self, buf, width, height, font_name='font5x8.bin'):
+    def __init__(self, gfxbuf, font_name='font5x8.bin'):
         # Specify the drawing area width and height, and the pixel function to
         # call when drawing pixels (should take an x and y param at least).
         # Optionally specify font_name to override the font file to use
@@ -24,9 +23,7 @@ class BitmapFont(object):
         self._font_height = 0
         self._font_name = font_name
         self._font = None
-        self._buffer = buf
-        self._width = width
-        self._height = height
+        self._gfxbuf = gfxbuf
 
     def init(self):
         # Open the font file and grab the character width and height values.
@@ -50,11 +47,11 @@ class BitmapFont(object):
     def byte_count_for_height(cls, font_height):
         return (font_height+7)//8
 
-    def _draw_char(self, ch, x, y):
+    def _draw_char(self, ch, x, y, bold=False):
         # print("char @ %dx%d" % (x, y))
         # Don't draw the character if it will be clipped off the visible area.
-        if x < -self._font_width or x >= self._width or \
-           y < -self._font_height or y >= self._height:
+        if x < -self._font_width or x >= self._gfxbuf.width or \
+           y < -self._font_height or y >= self._gfxbuf.height:
             return
         # Go through each column of the character.
         bpc = self.byte_count_for_height(self._font_height)
@@ -71,52 +68,94 @@ class BitmapFont(object):
             if len(bytes_) < sbpc:
                 bytes_ = b''.join(bytes_, b'\x00'*(sbpc-bpc))
             bits, = sunpack(fmt, bytes_)
-            pos = self._width * (y >> 3)
+            pos = self._gfxbuf.width * (y >> 3)
             yoff = y & 7
             pos += x + char_x
             if not first_pos:
                 first_pos = pos
-            last_pos = len(self._buffer)
+            last_pos = len(self._gfxbuf)
+            lbo_col = (x + char_x) >= (self._gfxbuf.width-1)
             if yoff == 0:
                 for col in range(bpc):
-                    self._buffer[pos] = bits & 0xff
+                    self._gfxbuf.buffer[pos] |= bits & 0xff
+                    if bold and not lbo_col:
+                        self._gfxbuf.buffer[pos+1] |= bits & 0xff
                     bits >>= 8
-                    pos += self._width
+                    pos += self._gfxbuf.width
             else:
                 bits <<= yoff
-                mask = ((1 << self._font_height)-1) << yoff
                 for col in range(bpc+1):
-                    self._buffer[pos] &= ~(mask & 0xff)
-                    self._buffer[pos] |= bits & 0xff
+                    self._gfxbuf.buffer[pos] |= bits & 0xff
+                    if bold and not lbo_col:
+                        self._gfxbuf.buffer[pos+1] |= bits & 0xff
                     bits >>= 8
-                    mask >>= 8
-                    pos += self._width
+                    pos += self._gfxbuf.width
                     if pos >= last_pos:
                         break
-        return first_pos, pos
+        return first_pos, pos + 1 + int(bool(bold))
 
-    def text(self, text, x, y):
+    def erase(self, x, y, w, h):
+        if (x + w) > self._gfxbuf.width:
+            w = self._gfxbuf.width-x
+            if w < 0:
+                return
+        if (y + h) > self._gfxbuf.height:
+            h = self._gfxbuf.height - y
+            if y < 0:
+                return
+        ebuf = bytes([0]*w)
+        yoff = y & 7
+        last_y = y+h
+        if yoff:
+            imask = (1 << yoff) - 1
+            line = y >> 3
+            pos = line*self._gfxbuf.width + x
+            for xix in range(pos, pos+w):
+                self._gfxbuf.buffer[xix] &= imask
+            y += 8 - yoff
+        while (y + 8) <= last_y:
+            line = y >> 3
+            pos = line*self._gfxbuf.width + x
+            self._gfxbuf.buffer[pos:pos+w] = ebuf
+            y += 8
+        yoff = last_y & 7
+        if yoff:
+            mask = 0xff & ~((1 << yoff) - 1)
+            line = last_y >> 3
+            pos = line*self._gfxbuf.width + x
+            for xix in range(pos, pos+w):
+                self._gfxbuf.buffer[xix] &= mask
+
+    def text(self, text, x, y, bold=False):
         # Draw the specified text at the specified location.
-        fpos = len(self._buffer)
+        self._erase_text(text, x, y, bold)
+        fpos = len(self._gfxbuf)
         lpos = 0
         for i in range(len(text)):
-            first, last = self._draw_char(text[i],
-                                          x + (i * (self._font_width + 1)), y)
+            first, last = self._draw_char(
+                text[i], x + (i * (self._font_width + 1)), y, bold)
             if fpos > first:
                 fpos = first
             if lpos < last:
                 lpos = last
-        # print("fpos %d %d, lpos %d %d" % (fpos, fpos%128, lpos, lpos%128))
-        tl = (fpos % self._width, 8*(fpos // self._width))
-        br = (lpos % self._width, 8*(lpos // self._width))
-        # print("rect %d,%d" % tl,  "x %d,%d" % br)
-        return tl, br
+        tl = (fpos % self._gfxbuf.width, 8*(fpos // self._gfxbuf.width))
+        br = (lpos % self._gfxbuf.width, 8*(lpos // self._gfxbuf.width))
+        self._gfxbuf.invalidate(tl, br)
 
-    def text_width(self, text):
+    def text_width(self, text, bold=False):
         # Return the pixel width of the specified text message.
-        return len(text) * (self._font_width + 1)
+        return len(text) * (self._font_width + 1) + int(bool(bold))
 
     def height(self):
         if not self._font_height:
             raise ValueError('Not initialized')
         return self._font_height
+
+    def _erase_text(self, text, x, y, bold):
+        xe = x + self.text_width(text, bold)
+        if x > 0:
+            x -= 1
+        if xe < self._gfxbuf.width:
+            xe += 1
+        w = xe - x
+        self.erase(x, y, w, self._font_height)
