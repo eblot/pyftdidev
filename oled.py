@@ -156,26 +156,27 @@ class Ssd1306(object):
                    self.ADDRESS_SET_LOW_COL_CMD | (column & ((1 << 4) - 1))]
         self._if.write_command(bytes(command))
 
-    def show(self, first=0, last=0):
-        print('-'*20)
-        if not last:
-            last = len(self._gddram)-1
-        col = first % self.WIDTH
-        line = first // self.WIDTH
-        start = col
-        end = last % self.WIDTH
+    def paint(self, tl=None, br=None):
+        # print('-'*20)
+        if not tl:
+            tl = (0, 0)
+        if not br:
+            br = (self.WIDTH, self.HEIGHT)
+        x, y = tl[0], tl[1] & ~0x7
+        last_y = (br[1]+7) & ~0x7
+        width = br[0]-tl[0]
         count = 0
-        print("first %d start %d" % (first, start))
-        print("last %d  end   %d" % (last, end))
-        while end <= last:
-            self.set_cursor(line//8, col)
+        # print('paint %d,%d x %d,%d: %d cols, %d lines' %
+        #       (x, y, x+width, last_y, width, (last_y-y)//8))
+        while y < last_y:
+            self.set_cursor(y//8, x)
+            start = x*self.WIDTH//8
+            end = start + width
             self._if.write_data(self._gddram[start:end])
             count += (end-start)
-            print("  last %d  end   %d" % (start, end))
-            start += self.WIDTH
-            end += self.WIDTH
-            line += 8
-        print('%d bytes' % count)
+            # print("  last %d  end   %d" % (start, end))
+            y += 8
+        # print('%d bytes' % count)
 
     def qrcode(self, msg):
         try:
@@ -199,15 +200,15 @@ class Ssd1306(object):
             if pixel:
                 self._gddram[row*self.WIDTH+col] |= 1 << line
         start = now()
-        self.show()
+        self.paint()
         print('Time: %.3fs' % (now()-start))
 
     def text(self, msg, x=0, y=0):
         from adafruit.bitmapfont import BitmapFont
         with BitmapFont(self._gddram, self.WIDTH, self.HEIGHT) as bf:
-            fpos, lpos = bf.text(msg, x, y)
+            tl, br = bf.text(msg, x, y)
         start = now()
-        self.show(fpos, lpos)
+        self.paint(tl, br)
         print('Time: %.3fs' % (now()-start))
 
 

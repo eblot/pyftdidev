@@ -51,6 +51,7 @@ class BitmapFont(object):
         return (font_height+7)//8
 
     def _draw_char(self, ch, x, y):
+        # print("char @ %dx%d" % (x, y))
         # Don't draw the character if it will be clipped off the visible area.
         if x < -self._font_width or x >= self._width or \
            y < -self._font_height or y >= self._height:
@@ -105,7 +106,11 @@ class BitmapFont(object):
                 fpos = first
             if lpos < last:
                 lpos = last
-        return fpos, lpos
+        # print("fpos %d %d, lpos %d %d" % (fpos, fpos%128, lpos, lpos%128))
+        tl = (fpos % self._width, 8*(fpos // self._width))
+        br = (lpos % self._width, 8*(lpos // self._width))
+        # print("rect %d,%d" % tl,  "x %d,%d" % br)
+        return tl, br
 
     def text_width(self, text):
         # Return the pixel width of the specified text message.
