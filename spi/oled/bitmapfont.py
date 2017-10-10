@@ -2,7 +2,6 @@
 # Original author: Tony DiCola
 # License: MIT License (https://opensource.org/licenses/MIT)
 
-from struct import unpack as sunpack
 from os.path import dirname, join as joinpath
 
 
@@ -28,9 +27,11 @@ class BitmapFont(object):
     def init(self):
         # Open the font file and grab the character width and height values.
         # Note that only fonts up to 8 pixels tall are currently supported.
-        font_file = joinpath(dirname(__file__), self._font_name)
+        font_file = joinpath(dirname(__file__), 'fonts', self._font_name)
+        print(font_file)
         self._font = open(font_file, 'rb')
-        self._font_width, self._font_height = sunpack('BB', self._font.read(2))
+        self._font_width, self._font_height = self._font.read(2)
+        print('Font W:%d x H:%d' % (self._font_width, self._font_height))
 
     def deinit(self):
         # Close the font file as cleanup.
@@ -52,47 +53,53 @@ class BitmapFont(object):
         # Don't draw the character if it will be clipped off the visible area.
         if x < -self._font_width or x >= self._gfxbuf.width or \
            y < -self._font_height or y >= self._gfxbuf.height:
-            return
+            return None, None
         # Go through each column of the character.
         bpc = self.byte_count_for_height(self._font_height)
-        sbpc, fmt = {1: (1, 'B'),
-                     2: (2, '<H'),
-                     3: (4, '<I'),
-                     4: (4, '<I')}[bpc]
         first_pos = 0
-        last_pos = 0
+        last_pos = len(self._gfxbuf)-1
         for char_x in range(self._font_width):
             # Grab the byte for the current column of font data.
-            self._font.seek(2 + (ord(ch) * self._font_width) + char_x)
+            self._font.seek(2 + bpc*(ord(ch)*self._font_width+char_x))
             bytes_ = self._font.read(bpc)
-            if len(bytes_) < sbpc:
-                bytes_ = b''.join(bytes_, b'\x00'*(sbpc-bpc))
-            bits, = sunpack(fmt, bytes_)
+            bits = sum([bv << (8*bp) for bp, bv in enumerate(bytes_)])
             pos = self._gfxbuf.width * (y >> 3)
             yoff = y & 7
             pos += x + char_x
             if not first_pos:
                 first_pos = pos
-            last_pos = len(self._gfxbuf)
+            if pos >= last_pos:
+                break
+            l_col = (x + char_x) >= self._gfxbuf.width
             lbo_col = (x + char_x) >= (self._gfxbuf.width-1)
+            dbg = []
             if yoff == 0:
                 for col in range(bpc):
-                    self._gfxbuf.buffer[pos] |= bits & 0xff
-                    if bold and not lbo_col:
-                        self._gfxbuf.buffer[pos+1] |= bits & 0xff
-                    bits >>= 8
-                    pos += self._gfxbuf.width
-            else:
-                bits <<= yoff
-                for col in range(bpc+1):
-                    self._gfxbuf.buffer[pos] |= bits & 0xff
+                    if not l_col:
+                        self._gfxbuf.buffer[pos] |= bits & 0xff
+                        dbg.append('{0:08b}'.format(bits & 0xff).replace('0',
+                                   ' ').replace('1', chr(0x2589)))
                     if bold and not lbo_col:
                         self._gfxbuf.buffer[pos+1] |= bits & 0xff
                     bits >>= 8
                     pos += self._gfxbuf.width
                     if pos >= last_pos:
                         break
-        return first_pos, pos + 1 + int(bool(bold))
+            else:
+                bits <<= yoff
+                for col in range(bpc+1):
+                    if not l_col:
+                        self._gfxbuf.buffer[pos] |= bits & 0xff
+                        dbg.append('{0:08b}'.format(bits & 0xff).replace('0',
+                                   ' ').replace('1', chr(0x2589)))
+                    if bold and not lbo_col:
+                        self._gfxbuf.buffer[pos+1] |= bits & 0xff
+                    bits >>= 8
+                    pos += self._gfxbuf.width
+                    if pos >= last_pos:
+                        break
+            # print(''.join(reversed(dbg)))
+        return first_pos, min(pos + 1 + int(bool(bold)), last_pos)
 
     def erase(self, x, y, w, h):
         if (x + w) > self._gfxbuf.width:
@@ -129,17 +136,20 @@ class BitmapFont(object):
     def text(self, text, x, y, bold=False):
         # Draw the specified text at the specified location.
         self._erase_text(text, x, y, bold)
-        fpos = len(self._gfxbuf)
+        fpos = len(self._gfxbuf)-1
         lpos = 0
         for i in range(len(text)):
             first, last = self._draw_char(
                 text[i], x + (i * (self._font_width + 1)), y, bold)
-            if fpos > first:
-                fpos = first
-            if lpos < last:
-                lpos = last
-        tl = (fpos % self._gfxbuf.width, 8*(fpos // self._gfxbuf.width))
-        br = (lpos % self._gfxbuf.width, 8*(lpos // self._gfxbuf.width))
+            if first is not None:
+                if fpos > first:
+                    fpos = first
+            if last is not None:
+                if lpos < last:
+                    lpos = last
+        lpos = min(lpos, len(self._gfxbuf)-1)
+        tl = (fpos % self._gfxbuf.width, (8*fpos // self._gfxbuf.width))
+        br = (lpos % self._gfxbuf.width, (8*lpos // self._gfxbuf.width))
         self._gfxbuf.invalidate(tl, br)
 
     def text_width(self, text, bold=False):

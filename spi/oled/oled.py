@@ -105,7 +105,7 @@ class GfxBuffer(object):
     def paint(self):
         x, y = self._tl[0], self._tl[1] & ~0x7
         last_y = (self._br[1]+7) & ~0x7
-        width = self._br[0]-self._tl[0]
+        width = self._br[0]-self._tl[0] + 1
         count = 0
         while y < last_y:
             self.display.set_cursor(y//8, x)
@@ -237,7 +237,8 @@ class Ssd1306(object):
 
     def text(self, msg, x=0, y=0, **kwargs):
         from adafruit.bitmapfont import BitmapFont
-        with BitmapFont(self.gfxbuf) as bf:
+        font = 'font%dx%d.bin' % (int(argv[1]), int(argv[2]))
+        with BitmapFont(self.gfxbuf, font) as bf:
             bf.text(msg, x, y, **kwargs)
         self.gfxbuf.paint()
 
@@ -251,8 +252,8 @@ def main():
     if len(argv) > 1:
         disp.qrcode(argv[1])
     disp.invert(True)
-    disp.text("first", 10, 16, bold=True)
-    disp.text("next", 5, 21)
+    disp.text("ABCD", 20, 27, bold=True)
+    # disp.text("next", 5, 21)
     # prevent SPI glitches as screen does not support a /CS line
     sleep(0.1)
     port.close()
