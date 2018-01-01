@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from os import environ
+from os import environ, uname
 from sys import argv, stdout
 from time import sleep, time as now
 
@@ -193,7 +193,12 @@ class Ssd1306:
 
 
 def main():
-    from ftdi_spi import get_port
+    machine = uname().machine
+    # quick and unreliable way to detect RPi for now
+    if machine == 'armv7l':
+        from kernel_spi import get_port
+    else:
+        from ftdi_spi import get_port
     port = get_port()
     port.open()
     disp = Ssd1306(port)
