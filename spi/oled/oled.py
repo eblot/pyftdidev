@@ -216,4 +216,6 @@ def main():
 
 
 if __name__ == '__main__':
+    # oled.py <width> <height> <text> [text...]
     main()
+

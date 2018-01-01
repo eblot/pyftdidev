@@ -8,8 +8,8 @@ class Ssd1306KernelPort:
     """
     """
 
-    DC_PIN = 12  # lcd_data6
-    RESET_PIN = 13  # lcd_data7
+    DC_PIN = 13  # Pin 33 
+    RESET_PIN = 12  # Pin 32
 
     def __init__(self, debug=False):
         self._debug = debug
@@ -19,7 +19,7 @@ class Ssd1306KernelPort:
         """Open an SPI connection to a slave"""
         self._spi_port = SpiDev()
         self._spi_port.open(0, 0)
-        self._spi_port.max_speed_hz = 5000
+        self._spi_port.max_speed_hz = int(3E6)
         self._spi_port.mode = 0b00
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
