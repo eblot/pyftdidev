@@ -1,62 +1,11 @@
 #!/usr/bin/env python3
 
 from os import environ
-from pyftdi import FtdiLogger
-from pyftdi.spi import SpiController
 from sys import argv, stdout
 from time import sleep, time as now
 
 
-class Ssd1306Port(object):
-    """
-    """
-
-    DC_PIN = 1 << 4
-    RESET_PIN = 1 << 5
-    IO_PINS = DC_PIN | RESET_PIN
-
-    def __init__(self, debug=False):
-        self._debug = debug
-        self._spi = SpiController(cs_count=1)
-        self._spi_port = None
-        self._io_port = None
-        self._io = 0
-
-    def open(self):
-        """Open an SPI connection to a slave"""
-        url = environ.get('FTDI_DEVICE', 'ftdi:///1')
-        self._spi.configure(url, debug=self._debug)
-        self._spi_port = self._spi.get_port(0, freq=3E6, mode=0)
-        self._io_port = self._spi.get_gpio()
-        self._io_port.set_direction(self.IO_PINS, self.IO_PINS)
-
-    def close(self):
-        """Close the SPI connection"""
-        self._spi.terminate()
-
-    def reset(self):
-        self._io = self.RESET_PIN
-        self._io_port.write(self._io)
-        sleep(0.001)
-        self._io = 0
-        self._io_port.write(self._io)
-        sleep(0.001)
-        self._io = self.RESET_PIN
-        self._io_port.write(self._io)
-        sleep(0.001)
-
-    def write_command(self, data):
-        self._io &= ~self.DC_PIN
-        self._io_port.write(self._io)
-        self._spi_port.write(data)
-
-    def write_data(self, data):
-        self._io |= self.DC_PIN
-        self._io_port.write(self._io)
-        self._spi_port.write(data)
-
-
-class GfxBuffer(object):
+class GfxBuffer:
     """
     """
 
@@ -118,7 +67,7 @@ class GfxBuffer(object):
         self._br = [0, 0]
 
 
-class Ssd1306(object):
+class Ssd1306:
     """
     """
 
@@ -236,7 +185,7 @@ class Ssd1306(object):
         self.gfxbuf.paint()
 
     def text(self, msg, x=0, y=0, **kwargs):
-        from adafruit.bitmapfont import BitmapFont
+        from bitmapfont import BitmapFont
         font = 'font%dx%d.bin' % (int(argv[1]), int(argv[2]))
         with BitmapFont(self.gfxbuf, font) as bf:
             bf.text(msg, x, y, **kwargs)
@@ -244,15 +193,17 @@ class Ssd1306(object):
 
 
 def main():
-    port = Ssd1306Port(False)
+    from ftdi_spi import get_port
+    port = get_port()
     port.open()
     disp = Ssd1306(port)
     disp.initialize()
-    disp.invert(True)
-    if len(argv) > 1:
-        disp.qrcode(argv[1])
-    disp.invert(True)
-    disp.text("ABCD", 20, 27, bold=True)
+    disp.invert(False)
+    # disp.qrcode(argv[3])
+    # disp.invert(True)
+    # print(len(argv))
+    for argc in range(3, len(argv)):
+        disp.text(argv[argc], 10, 30+(argc-3)*int(int(argv[2])*1.2), bold=True)
     # disp.text("next", 5, 21)
     # prevent SPI glitches as screen does not support a /CS line
     sleep(0.1)
@@ -260,12 +211,4 @@ def main():
 
 
 if __name__ == '__main__':
-    import logging
-    level = environ.get('FTDI_LOGLEVEL', 'info').upper()
-    try:
-        loglevel = getattr(logging, level)
-    except AttributeError:
-        raise ValueError('Invalid log level: %s', level)
-    FtdiLogger.log.addHandler(logging.StreamHandler(stdout))
-    FtdiLogger.set_level(loglevel)
     main()
