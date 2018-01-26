@@ -3,11 +3,14 @@ from ftdi_spi import get_port
 from time import sleep
 
 
-class EPD:
+class Epd:
 
     # Display resolution
     EPD_WIDTH = 128
     EPD_HEIGHT = 296
+
+    WHITE = 0xFF
+    BLACK = 0x00
 
     # EPD2IN9 commands
     DRIVER_OUTPUT_CONTROL = 0x01
@@ -47,33 +50,36 @@ class EPD:
     def __init__(self):
         self.width = self.EPD_WIDTH
         self.height = self.EPD_HEIGHT
-        self.lut = self.LUT_FULL_UPDATE
-        self.port = get_port()
+        self._refresh_mode = None
+        self._port = get_port()
+
+    @property
+    def is_partial_refresh(self):
+        return self._refresh_mode
+
+    def finalize(self):
+        self._port.close()
 
     def delay_ms(self, delaytime):
         sleep(delaytime / 1000.0)
 
     def send_command(self, command):
-        self.port.write_command(command)
+        self._port.write_command(command)
 
     def send_data(self, data):
-        self.port.write_data(data)
+        self._port.write_data(data)
 
-    def init(self, lut):
-        if not self.port:
+    def init(self, full=True):
+        if not self._port:
             raise IOError('No port')
-        self.port.open()
-        # EPD hardware init start
-        self.lut = lut
+        self._port.open()
         self.reset()
         self.send_command(self.DRIVER_OUTPUT_CONTROL)
-        self.send_data((self.EPD_HEIGHT - 1) & 0xFF)
-        self.send_data(((self.EPD_HEIGHT - 1) >> 8) & 0xFF)
-        self.send_data(0x00)                     # GD = 0 SM = 0 TB = 0
+        self.send_data(array('B', [(self.EPD_HEIGHT - 1) & 0xFF,
+                                   ((self.EPD_HEIGHT - 1) >> 8) & 0xFF,
+                                   0x00])) # GD = 0 SM = 0 TB = 0
         self.send_command(self.BOOSTER_SOFT_START_CONTROL)
-        self.send_data(0xD7)
-        self.send_data(0xD6)
-        self.send_data(0x9D)
+        self.send_data(array('B', [0xD7, 0xD6, 0x9D]))
         self.send_command(self.WRITE_VCOM_REGISTER)
         self.send_data(0xA8)                     # VCOM 7C
         self.send_command(self.SET_DUMMY_LINE_PERIOD)
@@ -82,25 +88,23 @@ class EPD:
         self.send_data(0x08)                     # 2us per line
         self.send_command(self.DATA_ENTRY_MODE_SETTING)
         self.send_data(0x03)                     # X increment Y increment
-        self.set_lut(self.lut)
-        # EPD hardware init end
+        self.set_lut(full and self.LUT_FULL_UPDATE or
+                     self.LUT_PARTIAL_UPDATE)
+        self._refresh_mode = full
 
     def fini(self):
-        self.port.close()
+        self._port.close()
 
     def wait_until_idle(self):
-        self.port.wait_ready()
+        self._port.wait_ready()
 
     def reset(self):
-        self.port.reset()
+        self._port.reset()
 
     def set_lut(self, lut):
         """set the look-up table register"""
-        self.lut = lut
         self.send_command(self.WRITE_LUT_REGISTER)
-        # the length of look-up table is 30 bytes
-        for i in range(0, len(lut)):
-            self.send_data(self.lut[i])
+        self.send_data(array('B', lut))
 
     def get_frame_buffer(self, image):
         """convert an image to a buffer"""
@@ -160,7 +164,7 @@ class EPD:
                     byte_to_send = 0x00
         self.send_data(buf)
 
-    def clear_frame_memory(self, color):
+    def clear_frame_memory(self, invert=False):
         """clear the frame memory with the specified color.
            this won't update the display.
         """
@@ -168,8 +172,9 @@ class EPD:
         self.set_memory_pointer(0, 0)
         self.send_command(self.WRITE_RAM)
         # send the color data
-        for i in range(0, self.width // 8 * self.height):
-            self.send_data(color)
+        count = self.width // 8 * self.height
+        color = not invert and self.WHITE or self.BLACK
+        self.send_data(array('B', [color] * count))
 
     def display_frame(self):
         """update the display

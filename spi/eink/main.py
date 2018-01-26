@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 
 from PIL import Image, ImageDraw, ImageFont
-from epd2in9 import EPD
+from epd2in9 import Epd
 from os.path import isfile
 from time import localtime, strftime, time as now
 
 
 def main(fontname):
-    epd = EPD()
+    epd = Epd()
 
     # use full update to ensure proper start up
     epd.init(epd.LUT_FULL_UPDATE)
