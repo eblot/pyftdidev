@@ -9,16 +9,16 @@ class EpdFtdiPort:
     """
     """
 
-    DC_PIN = 1 << 4
-    RESET_PIN = 1 << 5
-    BUSY_PIN = 1 << 6
+    DC_PIN = 1 << 5
+    RESET_PIN = 1 << 6
+    BUSY_PIN = 1 << 7
     I_PINS = BUSY_PIN
     O_PINS = DC_PIN | RESET_PIN
     IO_PINS = I_PINS | O_PINS
 
     def __init__(self, debug=False):
         self._debug = debug
-        self._spi = SpiController(cs_count=1)
+        self._spi = SpiController(cs_count=2)
         self._spi_port = None
         self._io_port = None
         self._io = 0

@@ -9,13 +9,13 @@ class Ssd1306FtdiPort:
     """
     """
 
-    DC_PIN = 1 << 4
-    RESET_PIN = 1 << 5
+    DC_PIN = 1 << 5
+    RESET_PIN = 1 << 6
     IO_PINS = DC_PIN | RESET_PIN
 
     def __init__(self, debug=False):
         self._debug = debug
-        self._spi = SpiController(cs_count=1)
+        self._spi = SpiController(cs_count=2)
         self._spi_port = None
         self._io_port = None
         self._io = 0
@@ -24,7 +24,7 @@ class Ssd1306FtdiPort:
         """Open an SPI connection to a slave"""
         url = environ.get('FTDI_DEVICE', 'ftdi:///1')
         self._spi.configure(url, debug=self._debug)
-        self._spi_port = self._spi.get_port(0, freq=3E6, mode=0)
+        self._spi_port = self._spi.get_port(1, freq=3E6, mode=0)
         self._io_port = self._spi.get_gpio()
         self._io_port.set_direction(self.IO_PINS, self.IO_PINS)
 
