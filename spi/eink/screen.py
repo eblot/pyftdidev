@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 
 from PIL import Image, ImageDraw, ImageFont
+from atexit import register
 from collections import deque, namedtuple
 from epd2in9 import Epd
+from os import read
 from os.path import isfile
 from subprocess import check_output, TimeoutExpired
+from select import select
+from sys import stdin
+from termios import (tcgetattr, tcsetattr,
+                     ECHO, ICANON, TCSAFLUSH, TCSANOW, VMIN, VTIME)
 from time import localtime, strftime, sleep, time as now
-from tools import getkey, is_term
 
 
 class Screen:
@@ -224,6 +229,7 @@ class Engine:
         self._screen = Screen()
         self._screen.set_font(fontname)
         self._mpc = Mpc()
+        self._term_config = None
 
     def initialize(self):
         self._mpc.initialize()
@@ -244,14 +250,25 @@ class Engine:
         self._screen.set_radio_names(radionames)
 
     def run(self):
+        self._init_term()
         rpos = self._mpc.current
         print("rpos", rpos)
         self._show_radio(rpos, False)
         radios = deque(sorted(self._mpc.radios.keys()))
         edit = False
         clear = False
+        sinfd = stdin.fileno()
+        last = 0
         while True:
-            code = getkey()
+            ready = select([sinfd], [], [], 0.25)[0]
+            if not ready:
+                ts = now()
+                if not edit and ((ts-last) > 1.0):
+                    tstr = strftime('%X ', localtime(now()))
+                    self._screen.set_titlebar(tstr, align='right')
+                    last = ts
+                continue
+            code = read(sinfd, 1)
             if code == b'q':
                 self._mpc.stop()
                 break
@@ -263,8 +280,8 @@ class Engine:
                 if not edit:
                     if rpos != self._mpc.current:
                         self._mpc.select(rpos)
-                    ts = strftime('%X ', localtime(now()))
-                    self._screen.set_titlebar(ts, align='right')
+                    #ts = strftime('%X ', localtime(now()))
+                    #self._screen.set_titlebar(ts, align='right')
                     self._show_radio(rpos, clear)
                     continue
                 # fallback on edit
@@ -276,6 +293,25 @@ class Engine:
                     radios.rotate(-1)
                 rpos = radios[0]
                 self._select_radio(rpos)
+
+    def _init_term(self):
+        """Internal terminal initialization function"""
+        fd = stdin.fileno()
+        old = tcgetattr(fd)
+        self._term_config = (fd, old)
+        new = tcgetattr(fd)
+        new[3] = new[3] & ~ICANON & ~ECHO
+        new[6][VMIN] = 1
+        new[6][VTIME] = 0
+        tcsetattr(fd, TCSANOW, new)
+        # terminal modes have to be restored on exit...
+        register(self._cleanup_term)
+
+    def _cleanup_term(self):
+        if self._term_config:
+            fd, old = self._term_config
+            tcsetattr(fd, TCSAFLUSH, old)
+            self._term_config = None
 
 
 if __name__ == '__main__':
