@@ -6,8 +6,8 @@ from time import sleep
 class Epd:
 
     # Display resolution
-    EPD_WIDTH = 128
-    EPD_HEIGHT = 296
+    WIDTH = 128
+    HEIGHT = 296
 
     WHITE = 0xFF
     BLACK = 0x00
@@ -48,8 +48,8 @@ class Epd:
     )
 
     def __init__(self):
-        self.width = self.EPD_WIDTH
-        self.height = self.EPD_HEIGHT
+        self.width = self.WIDTH
+        self.height = self.HEIGHT
         self._refresh_mode = None
         self._port = get_port()
 
@@ -75,8 +75,8 @@ class Epd:
         self._port.open()
         self.reset()
         self.send_command(self.DRIVER_OUTPUT_CONTROL)
-        self.send_data(array('B', [(self.EPD_HEIGHT - 1) & 0xFF,
-                                   ((self.EPD_HEIGHT - 1) >> 8) & 0xFF,
+        self.send_data(array('B', [(self.HEIGHT - 1) & 0xFF,
+                                   ((self.HEIGHT - 1) >> 8) & 0xFF,
                                    0x00])) # GD = 0 SM = 0 TB = 0
         self.send_command(self.BOOSTER_SOFT_START_CONTROL)
         self.send_data(array('B', [0xD7, 0xD6, 0x9D]))
@@ -96,7 +96,7 @@ class Epd:
         self._port.close()
 
     def wait_until_idle(self):
-        self._port.wait_ready()
+        return self._port.wait_ready()
 
     def reset(self):
         self._port.reset()
