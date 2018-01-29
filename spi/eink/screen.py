@@ -4,8 +4,9 @@ from PIL import Image, ImageDraw, ImageFont
 from atexit import register
 from collections import deque, namedtuple
 from epd2in9 import Epd
-from os import read
-from os.path import isfile
+from knob import RotaryEncoder
+from os import isatty, pipe2, pardir, read, uname, write, O_NONBLOCK
+from os.path import dirname, isfile, join as joinpath
 from subprocess import check_output, TimeoutExpired
 from select import select
 from sys import stdin
@@ -185,7 +186,7 @@ class Mpc:
     def initialize(self):
         self.execute('mpc stop'.split())
         self.execute('mpc clear'.split())
-        self.execute('mpc load playlist'.split())
+        self.execute('mpc load iradio'.split())
         playlist = self.execute(('mpc', 'playlist',
                                  '-f', r'%position%: %name%'))
         for radio in playlist.split('\n'):
@@ -224,18 +225,25 @@ class Mpc:
 
 class Engine:
 
-    def __init__(self):
-        fontname = 'DejaVuSansMono.ttf'
+    def __init__(self, fontname):
         self._screen = Screen()
         self._screen.set_font(fontname)
         self._mpc = Mpc()
         self._term_config = None
+        self._knob_pipe = pipe2(O_NONBLOCK)
+        self._knob = RotaryEncoder(23, 24, 17, self._knob_event)
 
     def initialize(self):
         self._mpc.initialize()
         self._screen.initialize(True)
         self._screen.initialize(False)
         self._screen.set_titlebar('Internet Radio')
+
+    def _knob_event(self, event):
+        print("KNOB", event)
+        if event:
+            write(self._knob_pipe[1], bytes([0x40 + event]))
+        #['NO_EVENT', 'CLOCKWISE', 'ANTICLOCKWISE', 'BUTTON_DOWN', 'BUTTON UP']
 
     def _show_radio(self, position, clear=False):
         radio = self._mpc.radios[position]
@@ -250,17 +258,22 @@ class Engine:
         self._screen.set_radio_names(radionames)
 
     def run(self):
-        self._init_term()
+        sinfd = stdin.fileno()
+        knobfd = self._knob_pipe[0]
+        if isatty(sinfd):
+            self._init_term()
         rpos = self._mpc.current
         print("rpos", rpos)
         self._show_radio(rpos, False)
         radios = deque(sorted(self._mpc.radios.keys()))
         edit = False
         clear = False
-        sinfd = stdin.fileno()
         last = 0
+        infds = [knobfd]
+        if isatty(sinfd):
+            infds.append(sinfd)
         while True:
-            ready = select([sinfd], [], [], 0.25)[0]
+            ready = select(list(infds), [], [], 0.25)[0]
             if not ready:
                 ts = now()
                 if not edit and ((ts-last) > 1.0):
@@ -268,14 +281,45 @@ class Engine:
                     self._screen.set_titlebar(tstr, align='right')
                     last = ts
                 continue
-            code = read(sinfd, 1)
-            if code == b'q':
+            action = ''
+            if sinfd in ready:
+                print("KEY")
+                code = read(sinfd, 1)
+                if code == b'q':
+                    action = 'S' # stop
+                elif code == b'a':
+                    action = 'C' # cancel
+                elif code == b'\n':
+                    action = 'E' # edit on/off
+                elif code == b'z':
+                    action = 'N' # next
+                elif code == b'x':
+                    action = 'P' # previous
+                else:
+                    print('?')
+                    continue
+            elif knobfd in ready:
+                print('KNOB')
+                code = read(knobfd, 1)
+                if code == b'A':
+                    print('Next')
+                    action = 'N'
+                elif code == b'B':
+                    print('Prev')
+                    action = 'P'
+                elif code == b'C':
+                    print('Edit')
+                    action = 'E'
+                else:
+                    print('?', code)
+                    continue
+            if action == 'S':
                 self._mpc.stop()
                 break
-            if code == b'a':
+            if action == 'C':
                 rpos = self._mpc.current
                 continue
-            if code == b'\n':
+            if action == 'E':
                 edit = not edit
                 if not edit:
                     if rpos != self._mpc.current:
@@ -287,9 +331,9 @@ class Engine:
                 # fallback on edit
                 clear = True
             if edit:
-                if code == b'z':
+                if action == 'P':
                     radios.rotate(1)
-                elif code == b'x':
+                elif action == 'N':
                     radios.rotate(-1)
                 rpos = radios[0]
                 self._select_radio(rpos)
@@ -315,7 +359,15 @@ class Engine:
 
 
 if __name__ == '__main__':
-    engine = Engine()
+    machine = uname().machine
+    # quick and unreliable way to detect RPi for now
+    if machine.startswith('armv'):
+        from RPi import GPIO
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+    fontname = 'DejaVuSansMono.ttf'
+    fontpath = joinpath(dirname(__file__), pardir, pardir, fontname)
+    engine = Engine(fontpath)
     engine.initialize()
     engine.run()
 

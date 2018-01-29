@@ -1,6 +1,13 @@
 from array import array
-from ftdi_spi import get_port
+from os import uname
 from time import sleep
+
+machine = uname().machine
+# quick and unreliable way to detect RPi for now
+if machine.startswith('armv'):
+    from kernel_spi import get_port
+else:
+    from ftdi_spi import get_port
 
 
 class Epd:
