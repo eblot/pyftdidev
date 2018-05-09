@@ -4,7 +4,8 @@ from PIL import Image, ImageDraw, ImageFont
 from atexit import register
 from collections import deque, namedtuple
 from epd2in9 import Epd
-from os import isatty, pipe, pardir, read, uname, write, O_NONBLOCK
+from knob import RotaryEncoder
+from os import isatty, pipe2, pardir, read, uname, write, O_NONBLOCK
 from os.path import dirname, isfile, join as joinpath
 from subprocess import check_output, TimeoutExpired
 from select import select
@@ -12,46 +13,36 @@ from sys import stdin
 from termios import (tcgetattr, tcsetattr,
                      ECHO, ICANON, TCSAFLUSH, TCSANOW, VMIN, VTIME)
 from time import localtime, strftime, sleep, time as now
-global RotaryEncoder
-RotaryEncoder = None
 
 
 class Screen:
 
-    FontDesc = namedtuple('FontDesc', 'font, height')
+    FontDesc = namedtuple('FontDesc', 'point, height')
 
     def __init__(self):
         self._epd = Epd()
         self._frame = Image.new('1', (self._epd.width, self._epd.height),
                                 Epd.WHITE)
-        self._fonts = {}
+        self._font_heights = {}
         self._line_offsets = {}
 
     def close(self):
         self._epd.fini()
 
-    def initialize(self, full):
-        if full == self._epd.is_partial_refresh:
-            return
+    def initialize(self):
         self._epd.fini()
-        self._epd.init(full)
-        # print("Init as %s" % (full and 'full' or 'partial'))
-        self._epd.clear_frame_memory()
-        self._epd.display_frame()
-        if not full:
-            self._epd.clear_frame_memory()
-            self._epd.display_frame()
+        self._epd.init(True)
+        self.set_titlebar('Internet Radio')
 
     def set_font(self, fontname):
-        if not isfile(fontname):
-            raise RuntimeError('Missing font file: %s' % fontname)
-        font = ImageFont.truetype(fontname, 16)
-        self._fonts['titlebar'] = Screen.FontDesc(font, font.getsize('Ij')[1])
-        font = ImageFont.truetype(fontname, 72)
-        self._fonts['fullscreen'] = Screen.FontDesc(font, font.getsize('Ij')[1])
-        font = ImageFont.truetype(fontname, 30)
-        self._fonts['firstline'] = Screen.FontDesc(font, font.getsize('Ij')[1])
-        self._line_offsets['firstline'] = self._fonts['titlebar'].height
+        self._epd.set_fontpath(fontname)
+        self._font_heights['titlebar'] = self._get_font_desc(16)
+        self._font_heights['fullscreen'] = self._get_font_desc(72)
+        self._font_heights['firstline'] = self._get_font_desc(30)
+        self._line_offsets['firstline'] = self._font_heights['titlebar'].height
+
+    def _get_font_desc(self, point):
+        return self.FontDesc(point, self._epd.get_font_height(point))
 
     def test_chrono(self):
         self.test_clock(False)
@@ -60,14 +51,12 @@ class Screen:
         self.test_clock(True)
 
     def test_clock(self, big):
-        height = big and 72 or 24
-        time_image = Image.new('1', (260, height), Epd.WHITE)
-        draw = ImageDraw.Draw(time_image)
-        font = big and self._fonts['fullscreen'].font or \
-            self._fonts['firstline'].font
-        image_width, image_height = time_image.size
-        while (True):
-            draw.rectangle((0, 0, image_width, image_height), fill=Epd.WHITE)
+        point = 72 if big else 24
+        font_height = self._epd.get_font_height(point)
+        yoff = (self._epd.height+font_height//2)//2
+        self._epd.clear()
+        self._epd.refresh()
+        while True:
             ts = now()
             if not big:
                 ms = (1000*ts) % 1000
@@ -75,112 +64,67 @@ class Screen:
             else:
                 timestr = strftime('%H:%M', localtime(ts))
             print(timestr)
-            draw.text((0, 0), timestr, font=font, fill=Epd.BLACK)
-            self._epd.set_frame_memory(time_image.rotate(90, expand=True),
-                                       45, 20)
-            self._epd.display_frame()
+            self._epd.text(timestr, 45, yoff, point)
+            self._epd.refresh()
             if big:
                 break
 
     def set_titlebar(self, text, align=''):
-        font, textheight = self._fonts['titlebar']
-        #textheight = 8
-        image = Image.new('1', (Epd.HEIGHT, textheight), Epd.BLACK)
-        width, height = image.size
-        draw = ImageDraw.Draw(image)
-        # draw.rectangle((0, 0, width, height), fill=Epd.BLACK)
-        draw.line((0, height-3, width, height-3), fill=Epd.WHITE)
-        print("HH", height, textheight)
-        textsize = font.getsize(text)
-        if not align:
-            align = 'left'
-        if align == 'center':
-            xpos = max(0, (width - textsize[0])//2)
-        elif align == 'right':
-            xpos = min(Epd.HEIGHT, Epd.HEIGHT-textsize[0])
-        else:
-            xpos = 0
-        #draw.text((xpos, 0), text, font=font, fill=Epd.BLACK)
-        image = image.rotate(90, expand=True)
-        mono = image.convert('1')
-        pixels = mono.load()
-        print('-'*16)
-        w, h = mono.size
-        print(w, h)
-        for x in range(w):
-            l = ''.join(["%d" % int(not bool(pixels[x,y])) for y in range(h)])
-            print (l)
-
-        self._epd.set_frame_memory(image, 0, 0)
-        self._epd.display_frame()
-        self._epd.set_frame_memory(image, 0, 0)
+        point, height = self._font_heights['titlebar']
+        self._epd.rectangle(0, 0, self._epd.width, height)
+        xpos = self._get_text_xoffset(text, point, align)
+        self._epd.text(text, xpos, height, point)
+        self._epd.refresh()
 
     def set_radio_name(self, text, clear_all=False, align=''):
-        return
-        font, textheight = self._fonts['firstline']
-        ypos = self._line_offsets['firstline']+2
-        height = clear_all and (Epd.WIDTH - ypos) or textheight
-        image = Image.new('1', (Epd.HEIGHT, height), Epd.WHITE)
-        width, height = image.size
-        draw = ImageDraw.Draw(image)
-        textsize = font.getsize(text)
-        if not align:
-            align = 'center'
-        if align == 'center':
-            xpos = max(0, (width - textsize[0])//2)
-        elif align == 'right':
-            xpos = min(Epd.HEIGHT, Epd.HEIGHT-textsize[0])
+        point, textheight = self._font_heights['firstline']
+        ypos = self._line_offsets['firstline']
+        if clear_all:
+            self._epd.rectangle(0, ypos,
+                                self._epd.width, self._epd.height)
         else:
-            xpos = 0
-        yoff = clear_all and 10 or 0
-        draw.rectangle((0, 0, width, height), fill=Epd.WHITE)
-        draw.text((xpos, yoff), text, font=font, fill=Epd.BLACK)
-        image = image.rotate(90, expand=True)
-        if not clear_all:
-            ypos += 10
-        # self._epd.set_frame_memory(image, Epd.WIDTH-height-ypos, 0)
-        self._epd.set_frame_memory(image, ypos, 0)
-        self._epd.display_frame()
-        # self._epd.set_frame_memory(image, Epd.WIDTH-height-ypos, 0)
-        self._epd.set_frame_memory(image, ypos, 0)
-        
+            self._epd.rectangle(0, ypos, self._epd.width, ypos+textheight)
+        xpos = self._get_text_xoffset(text, point, align)
+        ypos = ypos + 2*textheight
+        print('set_radio_name', text, clear_all, xpos, ypos)
+        self._epd.text(text, xpos, ypos, point)
+        self._epd.refresh()
+
     def set_radio_names(self, radios, align=''):
-        print('---')
-        font, textheight = self._fonts['firstline']
-        image = Image.new('1', (Epd.HEIGHT, 3*textheight), Epd.WHITE)
-        width, height = image.size
-        draw = ImageDraw.Draw(image)
-        draw.rectangle((0, 0, width, height), fill=Epd.WHITE)
-        ypos = 0
+        point, textheight = self._font_heights['firstline']
+        ypos = self._line_offsets['firstline']
+        self._epd.rectangle(0, ypos,
+                            self._epd.width, self._epd.height)
         for rpos, radio in enumerate(radios):
-            textwidth = radio and font.getsize(radio)[0] or 0
-            if not align:
-                align = 'center'
-            if align == 'center':
-                xpos = max(0, (width - textwidth)//2)
-            elif align == 'right':
-                xpos = min(Epd.HEIGHT, Epd.HEIGHT-textwidth)
-            else:
-                xpos = 0
+            ypos += textheight
+            textwidth = radio and self._epd.get_font_width(point, radio) or 0
+            xpos = self._get_text_xoffset(radio, point, align)
             invert = rpos == 1
             if radio:
                 if invert:
-                    fg = Epd.WHITE
-                    draw.rectangle((0, ypos, width, ypos+textheight),
-                                   fill=Epd.BLACK)
+                    fg = False
+                    #self._epd.rectangle(0, ypos,
+                    #                    self._epd.width, ypos+textheight,
+                    #                    black=True)
                 else:
-                    fg = Epd.BLACK
+                    fg = True
                 print("> %s %dx%d" % (radio, xpos, ypos))
-                draw.text((xpos, ypos), radio, font=font, fill=fg)
-            ypos += textheight
+                self._epd.text(radio, xpos, ypos, point, black=fg)
             if rpos == 2:
                 break
-        image = image.rotate(90, expand=True)
-        print("Image %dx%d" % image.size, "@ %d" % (Epd.WIDTH-height))
-        ypos = self._line_offsets['firstline']
-        self._epd.set_frame_memory(image, ypos, 0)
-        self._epd.display_frame()
-        self._epd.set_frame_memory(image, ypos, 0)
+        self._epd.refresh()
+
+    def _get_text_xoffset(self, text, point, align=''):
+        width = self._epd.width
+        textwidth = self._epd.get_font_width(point, text)
+        if not align:
+            align = 'left'
+        if align == 'center':
+            return max(0, (width - textwidth)//2)
+        elif align == 'right':
+            return min(width, width - textwidth)
+        else:
+            return 0
 
 
 class Mpc:
@@ -245,41 +189,40 @@ class Engine:
         self._screen.set_font(fontname)
         self._mpc = Mpc()
         self._term_config = None
-        self._knob_pipe = pipe()
-        if RotaryEncoder is not None:
-            self._knob = RotaryEncoder(23, 24, 17, self._knob_event)
+        self._knob_pipe = pipe2(O_NONBLOCK)
+        self._knob = RotaryEncoder(23, 24, 17, self._knob_event)
 
     def initialize(self):
         self._mpc.initialize()
-        self._screen.initialize(True)
-        self._screen.initialize(False)
-        self._screen.set_titlebar('Internet Radio')
+        self._screen.initialize()
 
     def _knob_event(self, event):
         print("KNOB", event)
         if event:
             write(self._knob_pipe[1], bytes([0x40 + event]))
-        # ['NO_EVENT', 'CLOCKWISE', 'ANTICLOCKWISE', 'BUTTON_DOWN',
-        #  'BUTTON UP']
+        #['NO_EVENT', 'CLOCKWISE', 'ANTICLOCKWISE', 'BUTTON_DOWN', 'BUTTON UP']
 
     def _show_radio(self, position, clear=False):
         radio = self._mpc.radios[position]
-        self._screen.set_radio_name(radio, clear)
+        self._screen.set_radio_name(radio, clear, align='center')
 
     def _select_radio(self, rpos):
         radionames = (
             rpos > 1 and self._mpc.radios[rpos - 1] or '',
             self._mpc.radios[rpos],
             rpos < len(self._mpc.radios) and
-            self._mpc.radios[rpos + 1] or '')
-        self._screen.set_radio_names(radionames)
+                        self._mpc.radios[rpos + 1] or '')
+        self._screen.set_radio_names(radionames, align='center')
 
     def run(self):
+        #self._screen.test_wallclock()
+        #self._screen.test_chrono()
         sinfd = stdin.fileno()
         knobfd = self._knob_pipe[0]
         if isatty(sinfd):
             self._init_term()
         rpos = self._mpc.current
+        print("rpos", rpos)
         self._show_radio(rpos, False)
         radios = deque(sorted(self._mpc.radios.keys()))
         edit = False
@@ -340,8 +283,8 @@ class Engine:
                 if not edit:
                     if rpos != self._mpc.current:
                         self._mpc.select(rpos)
-                    # ts = strftime('%X ', localtime(now()))
-                    # self._screen.set_titlebar(ts, align='right')
+                    #ts = strftime('%X ', localtime(now()))
+                    #self._screen.set_titlebar(ts, align='right')
                     self._show_radio(rpos, clear)
                     continue
                 # fallback on edit
@@ -379,7 +322,6 @@ if __name__ == '__main__':
     # quick and unreliable way to detect RPi for now
     if machine.startswith('armv'):
         from RPi import GPIO
-        from knob import RotaryEncoder
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
     fontname = 'DejaVuSansMono.ttf'
@@ -387,7 +329,3 @@ if __name__ == '__main__':
     engine = Engine(fontpath)
     engine.initialize()
     engine.run()
-
-    # screen.test_wallclock()
-    # screen.test_chrono()
-

@@ -2,7 +2,8 @@
 
 from PIL import Image, ImageDraw, ImageFont
 from epd2in9 import Epd
-from os.path import isfile
+from os import pardir
+from os.path import dirname, isfile, join as joinpath
 from time import localtime, strftime, time as now
 
 
@@ -47,6 +48,7 @@ def main(fontname):
 
 if __name__ == '__main__':
     fontname = 'DejaVuSansMono.ttf'
-    if not isfile(fontname):
-        raise RuntimeError('Missing font file: %s' % fontname)
-    main(fontname)
+    fontpath = joinpath(dirname(__file__), pardir, pardir, fontname)
+    if not isfile(fontpath):
+        raise RuntimeError('Missing font file: %s' % fontpath)
+    main(fontpath)
