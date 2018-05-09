@@ -62,7 +62,7 @@ class Epd:
 
     FontDesc = namedtuple('FontDesc', 'font, height')
 
-    def __init__(self):
+    def __init__(self, orientation=-1):
         self._partial_refresh = None
         self._port = get_port()
         self._frame = Image.new('1', (self.WIDTH, self.HEIGHT), Epd.WHITE)
@@ -70,6 +70,7 @@ class Epd:
         self._dirty = [self.WIDTH, self.HEIGHT, 0, 0]
         self._fonts = {}
         self._fontpath = None
+        self._orientation = int(orientation)/abs(int(orientation))
 
     @property
     def width(self):
@@ -127,7 +128,9 @@ class Epd:
         self._send_command(self.DEEP_SLEEP_MODE)
         self.wait_until_idle()
 
-    def refresh(self):
+    def refresh(self, full=False):
+        if full:
+            self._dirty = [0, 0, self.WIDTH, self.HEIGHT]
         data, area = self._build()
         if not data:
             print('Nothing to refresh')
@@ -144,11 +147,38 @@ class Epd:
                              outline=Epd.BLACK if black else Epd.WHITE)
         self._dirty = (0, 0) + self._frame.size
 
-    def rectangle(self, x1, y1, x2, y2, black=False):
-        xs = max(0, self.WIDTH-1-y2)
-        xe = min(self.WIDTH-y1, self.WIDTH)
-        ys = max(x1, 0)
-        ye = min(x2, self.HEIGHT)
+    def rectangle(self, x1, y1, x2, y2, black=True):
+        w, h = self._frame.size
+        if x1 < 0:
+            x1 = 0
+        elif x1 > h:
+            x1 = h
+        if x2 < 0:
+            x2 = 0
+        elif x2 > h:
+            x2 = h
+        if x1 > x2:
+            x1, x2 = x2, x1
+        if y1 < 0:
+            y1 = 0
+        elif y1 > w:
+            y1 = w
+        if y2 < 0:
+            y2 = 0
+        elif y2 > w:
+            y2 = w
+        if y1 > y2:
+            y1, y2 = y2, y1
+        if self._orientation < 0:
+            xs = w-y2
+            xe = w-y1
+            ys = x1
+            ye = x2
+        else:
+            xs = y1
+            xe = y2
+            ys = h-x2
+            ye = h-x1
         self._draw.rectangle((xs, ys, xe, ye),
                              fill=Epd.BLACK if black else Epd.WHITE,
                              outline=Epd.BLACK if black else Epd.WHITE)
@@ -158,6 +188,8 @@ class Epd:
 
     def hline(self, lx, ly, length, width=1, black=True):
         w, h = self._frame.size
+        if ly < 0 or ly >= w:
+            return
         if lx < 0:
             ys = 0
         elif lx > h:
@@ -169,10 +201,17 @@ class Epd:
         elif ly > w:
             xs = 0
         else:
-            xs = w-1-ly
-        ye = ys + length
-        if ye >= h:
-            ye = h-1
+            xs = ly
+        if self._orientation < 0:
+            xs = w-1-xs
+            ye = ys+length
+            if ye >= h:
+                ye = h-1
+        else:
+            ye = h-1-ys
+            ys = ye-length
+            if ys < 0:
+                ys = 0
         self._draw.line((xs, ys, xs, ye),
                         fill=Epd.BLACK if black else Epd.WHITE,
                         width=width)
@@ -184,18 +223,28 @@ class Epd:
         w, h = self._frame.size
         if lx < 0 or lx >= h:
             return
-        ys = lx
         if ly < 0:
             xs = 0
-            length -= ly
-            if length <= 0:
-                return
         elif ly > w:
-            return
+            xs = w-1
         else:
             xs = ly
-        xe = w-1-xs
-        xs = max(0, xe-length)
+        if lx < 0:
+            ys = h-1
+        elif lx > h:
+            ys = 0
+        else:
+            ys = lx
+        if self._orientation > 0:
+            ys = h-1-ys
+            xe = xs+length
+            if xe >= w:
+                xe = w-1
+        else:
+            xe = w-1-xs
+            xs = xe-length
+            if xs < 0:
+                xs = 0
         self._draw.line((xs, ys, xe, ys),
                         fill=Epd.BLACK if black else Epd.WHITE,
                         width=width)
@@ -212,15 +261,21 @@ class Epd:
         fdraw = ImageDraw.Draw(fimg)
         fdraw.text((0, -1), text, font=font,
                    fill=Epd.BLACK if black else Epd.WHITE)
-        fimg = fimg.rotate(-90, expand=True)
+        tw, th = fimg.size
+        fimg = fimg.rotate(90*self._orientation, expand=True)
         iw, ih = self._frame.size
         fw, fh = fimg.size
-        self._frame.paste(fimg, (iw-ty, tx))
+        if self._orientation < 0:
+            x, y = iw-ty, tx
+        elif self._orientation > 0:
+            x, y = ty, ih-tx-tw
+        print("Text @", x, y)
+        self._frame.paste(fimg, (x, y))
         xd1, yd1, xd2, yd2 = self._dirty
-        self._dirty = [max(min(xd1, iw-ty), 0),
-                       max(min(yd1, tx), 0),
-                       min(max(xd2, iw-ty+fw), iw),
-                       min(max(yd2, tx+fh), ih)]
+        self._dirty = [max(min(xd1, x), 0),
+                       max(min(yd1, y), 0),
+                       min(max(xd2, x+fw), iw),
+                       min(max(yd2, y+fh), ih)]
 
     def set_fontpath(self, path):
         if not isfile(path):
@@ -252,7 +307,6 @@ class Epd:
     def _build(self):
         width, height = self._frame.size
         xs, ys, xe, ye = self._dirty
-        # ys, ye = 0, height
         if ((xe-xs <= 0) and (ys-ye <= 0)):
             print('No-op', xs, ys, xe, ye)
             return None, None
@@ -262,7 +316,7 @@ class Epd:
             xe = width-1
         if ye >= height:
             ye = height-1
-        print('Refresh (%d,%d)..(%d,%d)' % (xs, ys, xe, ye))
+        # print('Refresh (%d,%d)..(%d,%d)' % (xs, ys, xe, ye))
         pixels = self._frame.load()
         buf = array('B')
         for hix in range(ys, ye+1):
