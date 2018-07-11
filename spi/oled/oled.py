@@ -10,15 +10,23 @@ class GfxBuffer:
     """
 
     def __init__(self, display, width, height):
-        self.display = display
         self.width = width
         self.height = height
-        self.buffer = bytearray(width*height//8)
+        self._display = display
         self._tl = [0, 0]
-        self._br = [self.width, self.height]
+        self._br = [self.width-1, self.height-1]
+        self._buffer = self.get_empty_buffer()
 
     def __len__(self):
-        return len(self.buffer)
+        return len(self._buffer)
+
+    def get_buffer(self):
+        return self._buffer
+
+    def erase(self):
+        self._buffer = self.get_empty_buffer()
+        self.invalidate()
+        self.paint()
 
     def copy_bitmap(self, img, x=0, y=0):
         width, height = img.size
@@ -33,7 +41,7 @@ class GfxBuffer:
             if yoff >= self.height:
                 break
             if pixel:
-                self.buffer[xoff + (yoff >> 3)*self.width] |= 1 << (yoff & 7)
+                self._buffer[xoff + (yoff >> 3)*self.width] |= 1 << (yoff & 7)
 
     def invalidate(self, tl=None, br=None):
         if not tl:
@@ -44,27 +52,128 @@ class GfxBuffer:
             if tl[1] < self._tl[1]:
                 self._tl[1] = tl[1]
         if not br:
-            self._br = [self.width, self.height]
+            self._br = [self.width-1, self.height-1]
         else:
             if br[0] > self._br[0]:
                 self._br[0] = br[0]
             if br[1] > self._br[1]:
                 self._br[1] = br[1]
+        #print('Invalidated area: X:%d..%d Y:%d..%d' %
+        #      (self._tl[0], self._br[0], self._tl[1], self._br[1]))
 
     def paint(self):
         x, y = self._tl[0], self._tl[1] & ~0x7
-        last_y = (self._br[1]+7) & ~0x7
-        width = self._br[0]-self._tl[0] + 1
+        last_y = self._br[1] & ~0x7
+        width = self._br[0]-self._tl[0]
         count = 0
-        while y < last_y:
-            self.display.set_cursor(y//8, x)
+        # print("Refresh X:%d..%d Y: %d..%d" % (x, x+width, y, last_y))
+        while y <= last_y:
+            # could optimize this command w/ advancer OLED commands,
+            # using a proper stride.
+            self._display.set_cursor(x, y)
             start = x + y*self.width//8
-            end = start + width
-            self.display.write_buffer(self.buffer[start:end])
+            end = start + width + 1
+            self._display.write_buffer(self._buffer[start:end])
             count += (end-start)
             y += 8
         self._tl = [self.width, self.height]
         self._br = [0, 0]
+
+    def get_empty_buffer(self, inverted=False):
+        if inverted:
+            return bytearray([0xFF for _ in range(self.width*self.height//8)])
+        else:
+            return bytearray(self.width*self.height//8)
+
+    def qrcode(self, msg):
+        try:
+            from qrcode import QRCode
+        except ImportError as ex:
+            self.log.critical('PIL and QRCode modules are required')
+        qr = QRCode(box_size=2, border=2)
+        qr.add_data(msg)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        self.copy_bitmap(img)
+        self.paint()
+
+    def text(self, msg, x=0, y=0, **kwargs):
+        from bitmapfont import BitmapFont
+        font = 'font%dx%d.bin' % (int(argv[1]), int(argv[2]))
+        with BitmapFont(self, font) as bf:
+            bf.text(msg, x, y, **kwargs)
+        self.paint()
+
+    def draw_v_line(self, x, y1, y2, negative=False, paint=False):
+        if not 0 <= x < self.width:
+            return
+        if y1 > y2:
+            y1, y2 = y2, y1
+        if y1 < 0:
+            y1 = 0
+        if y1 >= self.height:
+            y1 = self.height-1
+        if y2 < 0:
+            y2 = 0
+        if y2 >= self.height:
+            y2 = self.height-1
+        self.invalidate((x, y1), (x, y2))
+        py1 = y1 & 0x7
+        if py1:
+            offset = x + (y1//8)*self.width
+            mask = 0xff & ~((1 << py1) - 1)
+            if negative:
+                self._buffer[offset] &= ~mask
+            else:
+                self._buffer[offset] |= mask
+            y1 += 8-py1
+        py2 = (y2 + 1) & 0x7
+        if py2:
+            offset = x + (y2//8)*self.width
+            mask = (1 << py2) - 1
+            if negative:
+                self._buffer[offset] &= ~mask
+            else:
+                self._buffer[offset] |= mask
+            y2 -= py2
+        offset = x + (y1//8)*self.width
+        mask = 0x00 if negative else 0xff
+        while y1 <= y2:
+            self._buffer[offset] = mask
+            offset += self.width
+            y1 += 8
+        if paint:
+            self.paint()
+
+    def draw_h_line(self, x1, x2, y, negative=False, paint=False):
+        if not 0 <= y < self.height:
+            return
+        if x1 > x2:
+            x1, x2 = x2, x1
+        if x1 < 0:
+            x1 = 0
+        if x1 >= self.width:
+            x1 = self.width-1
+        if x2 < 0:
+            x2 = 0
+        if x2 >= self.width:
+            x2 = self.width-1
+        mask = 1 << (y & 0x7)
+        offset = (y//8)*self.width
+        start = offset+x1
+        end = offset+x2+1
+        if negative:
+            mask = ~mask
+            while start < end:
+                self._buffer[start] &= mask
+                start += 1
+        else:
+            while start < end:
+                self._buffer[start] |= mask
+                start += 1
+        self.invalidate((x1, y), (x2, y))
+        if paint:
+            self.paint()
 
 
 class Ssd1306:
@@ -121,75 +230,96 @@ class Ssd1306:
     FADE_OUT_BLINK_CMD = 0X23
     ZOOM_IN_CMD = 0xD6
 
+    # Address mode
+    MODE_ADDR_HORIZONTAL = 0
+    MODE_ADDR_VERTICAL = 1
+    MODE_ADDR_PAGE = 2
+
+    # Physical dimensions
     WIDTH = 128
     HEIGHT = 64
 
     def __init__(self, interface):
         self._if = interface
-        # self._gddram = bytearray(self.WIDTH*self.HEIGHT//8)
         self.gfxbuf = GfxBuffer(self, self.WIDTH, self.HEIGHT)
+        self._xoffset = 0
 
-    def initialize(self):
+    @property
+    def gfx(self):
+        return self.gfxbuf
+
+    def initialize(self, xoffset=0):
+        self._xoffset = xoffset
         init_sequence = bytes((
+            # switch off display
             self.DISPLAY_OFF_CMD,
+            # set clock and divider
             self.CLOCK_DISPLAY_CMD, 0x80,
-            self.MULTIPLEX_RATIO_CMD, 0x3f,
-            self.DISPLAY_OFFSET_CMD, 0x00,
+            # set height stride
+            self.MULTIPLEX_RATIO_CMD, self.HEIGHT-1,
+            # enable charge pump
             self.CHARGE_PUMP_CMD, self.CHARGE_PUMP_ENABLE,
-            self.START_LINE_BASE_CMD,
-            self.DISPLAY_REG_CMD,
-            self.DISPLAY_RESTORE_CMD,
-            self.SEGMENT_REMAP_HIGH_CMD,
-            self.SCAN_DIR_REVERSE_CMD,
-            self.COMM_PINS_CFG_CMD, self.COMM_PINS_CFG_DEFAULT,
-            self.DISPLAY_CONTRAST_CMD, 0x70,
+            # precharge period (magical value)
             self.PRECHARGE_PEDIOD_CMD, 0xf1,
+            # voltage level (magical value)
             self.VCOMM_DESELECT_LEVEL_CMD, 0x40,
+            # no vertical shift
+            self.DISPLAY_OFFSET_CMD, 0x00,  # cause issue on small oled?
+            # set display start line
+            self.START_LINE_BASE_CMD | 0x00,
+            # set page address mode addressing
+            self.ADDRESS_SET_MODE_CMD, self.MODE_ADDR_PAGE,
+            # invert display (for debug)
+            self.DISPLAY_REG_CMD,
+            # use RAM to populate display content
+            self.DISPLAY_RESTORE_CMD,
+            # horizontal mirror (LOW to disable)
+            self.SEGMENT_REMAP_HIGH_CMD,
+            # vertical mirror (NORMAL to disable)
+            self.SCAN_DIR_REVERSE_CMD,
+            # controller to display matrix config (use default)
+            self.COMM_PINS_CFG_CMD, self.COMM_PINS_CFG_DEFAULT,
+            # set contrast
+            self.DISPLAY_CONTRAST_CMD, 0x70,
+            # switch on display
             self.DISPLAY_ON_CMD))
         self._if.reset()
         self._if.write_command(init_sequence)
+        sleep(0.1)
 
     def invert(self, mode=True):
         self._if.write_command(bytes([mode and self.DISPLAY_INV_CMD or
                                       self.DISPLAY_REG_CMD]))
 
-    def set_page_address(self, address):
-        command = self.ADDRESS_SET_PAGES_CMD + address
+    def set_page_address(self, page):
+        if page > (self.HEIGHT//8):
+            raise ValueError('Invalid page')
+        command = self.ADDRESS_SET_PAGES_CMD + page
         self._if.write_command([command])
 
-    def set_column_address(self, address):
-        command = [self.ADDRESS_SET_HIGH_COL_CMD | (address >> 4),
-                   self.ADDRESS_SET_LOW_COL_CMD | (address & ((1 << 4) - 1))]
+    def set_column_address(self, column):
+        if column > self.WIDTH:
+            raise ValueError('Invalid column')
+        column += self._xoffset
+        command = [self.ADDRESS_SET_HIGH_COL_CMD | (column >> 4),
+                   self.ADDRESS_SET_LOW_COL_CMD | (column & ((1 << 4) - 1))]
         self._if.write_command(bytes(command))
 
-    def set_cursor(self, line, column):
-        # print("cursor L:%d C:%d" % (line, column))
-        command = [self.ADDRESS_SET_PAGES_CMD | line,
+    def set_cursor(self, column, line):
+        if line >= self.HEIGHT:
+            raise ValueError('Invalid line: %d' % line)
+        if column > self.WIDTH:
+            raise ValueError('Invalid column: %d' % column)
+        page = line // 8
+        # print("cursor L:%d C:%d P:%d" % (line, column, page))
+        column += self._xoffset
+        command = [self.ADDRESS_SET_PAGES_CMD | page,
                    self.ADDRESS_SET_HIGH_COL_CMD | (column >> 4),
                    self.ADDRESS_SET_LOW_COL_CMD | (column & ((1 << 4) - 1))]
         self._if.write_command(bytes(command))
 
     def write_buffer(self, buf):
         self._if.write_data(buf)
-
-    def qrcode(self, msg):
-        try:
-            from qrcode import QRCode
-        except ImportError as ex:
-            self.log.critical('PIL and QRCode modules are required')
-        qr = QRCode(box_size=2, border=2)
-        qr.add_data(msg)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        self.gfxbuf.copy_bitmap(img)
-        self.gfxbuf.paint()
-
-    def text(self, msg, x=0, y=0, **kwargs):
-        from bitmapfont import BitmapFont
-        font = 'font%dx%d.bin' % (int(argv[1]), int(argv[2]))
-        with BitmapFont(self.gfxbuf, font) as bf:
-            bf.text(msg, x, y, **kwargs)
-        self.gfxbuf.paint()
 
 
 def main():
@@ -202,15 +332,22 @@ def main():
     port = get_port()
     port.open()
     disp = Ssd1306(port)
-    disp.initialize()
-    disp.invert(False)
+    disp.initialize(2)
+    gfx = disp.gfx
+    gfx.erase()
+    # disp.invert(False)
     # disp.qrcode(argv[3])
     # disp.invert(True)
-    # print(len(argv))
+    for l in range(0, 64):
+        gfx.draw_h_line(int(argv[1])+l, int(argv[2])+l, l, paint=True)
+        #sleep(0.05)
+    for c in range(0, 25):
+        line = int(argv[2])
+        gfx.draw_v_line(int(argv[1])+c, line+c, line+33+c, paint=True)
+        #sleep(0.1)
     for argc in range(3, len(argv)):
-        disp.text(argv[argc], 10, 30+(argc-3)*int(int(argv[2])*1.2), bold=True)
-    # disp.text("next", 5, 21)
-    # prevent SPI glitches as screen does not support a /CS line
+        gfx.text(argv[argc], 10, 30+(argc-3)*int(int(argv[2])*1.2), bold=True)
+    # prevent SPI glitches for screen that does not support a /CS line
     sleep(0.1)
     port.close()
 

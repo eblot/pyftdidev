@@ -58,6 +58,7 @@ class BitmapFont(object):
         bpc = self.byte_count_for_height(self._font_height)
         first_pos = 0
         last_pos = len(self._gfxbuf)-1
+        buf = self._gfxbuf.get_buffer()
         for char_x in range(self._font_width):
             # Grab the byte for the current column of font data.
             self._font.seek(2 + bpc*(ord(ch)*self._font_width+char_x))
@@ -76,11 +77,11 @@ class BitmapFont(object):
             if yoff == 0:
                 for col in range(bpc):
                     if not l_col:
-                        self._gfxbuf.buffer[pos] |= bits & 0xff
+                        buf[pos] |= bits & 0xff
                         dbg.append('{0:08b}'.format(bits & 0xff).replace('0',
                                    ' ').replace('1', chr(0x2589)))
                     if bold and not lbo_col:
-                        self._gfxbuf.buffer[pos+1] |= bits & 0xff
+                        buf[pos+1] |= bits & 0xff
                     bits >>= 8
                     pos += self._gfxbuf.width
                     if pos >= last_pos:
@@ -89,11 +90,11 @@ class BitmapFont(object):
                 bits <<= yoff
                 for col in range(bpc+1):
                     if not l_col:
-                        self._gfxbuf.buffer[pos] |= bits & 0xff
+                        buf[pos] |= bits & 0xff
                         dbg.append('{0:08b}'.format(bits & 0xff).replace('0',
                                    ' ').replace('1', chr(0x2589)))
                     if bold and not lbo_col:
-                        self._gfxbuf.buffer[pos+1] |= bits & 0xff
+                        buf[pos+1] |= bits & 0xff
                     bits >>= 8
                     pos += self._gfxbuf.width
                     if pos >= last_pos:
@@ -113,17 +114,18 @@ class BitmapFont(object):
         ebuf = bytes([0]*w)
         yoff = y & 7
         last_y = y+h
+        buf = self._gfxbuf.get_buffer()
         if yoff:
             imask = (1 << yoff) - 1
             line = y >> 3
             pos = line*self._gfxbuf.width + x
             for xix in range(pos, pos+w):
-                self._gfxbuf.buffer[xix] &= imask
+                buf[xix] &= imask
             y += 8 - yoff
         while (y + 8) <= last_y:
             line = y >> 3
             pos = line*self._gfxbuf.width + x
-            self._gfxbuf.buffer[pos:pos+w] = ebuf
+            buf[pos:pos+w] = ebuf
             y += 8
         yoff = last_y & 7
         if yoff:
@@ -131,7 +133,7 @@ class BitmapFont(object):
             line = last_y >> 3
             pos = line*self._gfxbuf.width + x
             for xix in range(pos, pos+w):
-                self._gfxbuf.buffer[xix] &= mask
+                buf[xix] &= mask
 
     def text(self, text, x, y, bold=False):
         # Draw the specified text at the specified location.
